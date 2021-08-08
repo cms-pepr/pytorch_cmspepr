@@ -26,14 +26,14 @@ __device__ __forceinline__ scalar_t calculateDistance(
 }
 
 template <typename scalar_t>
-__device__ __forceinline__ scalar_t searchLargestDistance(
+__device__ __forceinline__ int32_t searchLargestDistance(
     int i_v, 
     scalar_t* d_dist, 
     int n_neigh, 
-    float& maxdist) {
+    scalar_t& maxdist) {
 
     maxdist = 0;
-    int maxidx = 0;
+    int32_t maxidx = 0;
     if (n_neigh < 2)
         return maxidx;
     for (size_t n = 1; n < n_neigh; n++) { //0 is self
@@ -60,10 +60,7 @@ __global__ void set_defaults(
     if (n >= n_neigh)
         return;
 
-    if (n) 
-    {
-       d_indices[I2D(i_v, n, n_neigh)] = i_v;
-    }
+    d_indices[I2D(i_v, n, n_neigh)] = i_v;
     d_dist[I2D(i_v, n, n_neigh)] = 0;
 }
 
