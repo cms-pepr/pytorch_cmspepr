@@ -98,3 +98,26 @@ def test_calc_LV_Lbeta_runs():
     assert isinstance(out[0], torch.Tensor)
     assert isinstance(out[1], torch.Tensor)
     assert len(out) == 2
+
+
+def test_calc_simple_clus_space_loss_runs():
+    """
+    Tests whether the calc_simple_clus_space_loss function returns output.
+    Does not perform any checking on that output.
+    """
+    cluster_index_per_event = torch.LongTensor([
+        0, 0, 0, 1, 1, 2, 2,
+        0, 0, 1, 1,
+        0, 0, 1, 1, 1, 2, 2,
+        ])
+    batch = torch.LongTensor([
+        0, 0, 0, 0, 0, 0, 0,
+        1, 1, 1, 1,
+        2, 2, 2, 2, 2, 2, 2
+        ])
+    cluster_space_coords = torch.rand((batch.size(0), 2))
+    L_att, L_rep = oc.calc_simple_clus_space_loss(
+        cluster_space_coords, cluster_index_per_event, batch
+        )
+    assert isinstance(L_att, torch.Tensor)
+    assert isinstance(L_rep, torch.Tensor)
