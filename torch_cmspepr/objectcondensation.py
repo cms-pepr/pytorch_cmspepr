@@ -1,7 +1,7 @@
 from typing import Tuple, Union
 import numpy as np
 import torch
-from torch_scatter import scatter_max, scatter_add
+from torch_scatter import scatter_max, scatter_add, scatter_mean
 
 
 def assert_no_nans(x):
@@ -26,7 +26,7 @@ def calc_LV_Lbeta(
     s_B: float = .1,
     noise_cluster_index: int = 0, # cluster_index entries with this value are noise/noise
     beta_stabilizing = 'soft_q_scaling',
-    huberize_norm_for_V_belonging = True,
+    huberize_norm_for_V_attractive = True,
     beta_term_option = 'paper',
     return_components = False
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], dict]:
@@ -47,7 +47,7 @@ def calc_LV_Lbeta(
         clip:  beta is clipped to 1-1e-4, q = beta.arctanh()**2 + qmin
         soft_q_scaling: beta is sigmoid(model_output), q = (clip(beta)/1.002).arctanh()**2 + qmin
 
-    huberize_norm_for_V_belonging: Huberizes the norms when used in the attractive potential
+    huberize_norm_for_V_attractive: Huberizes the norms when used in the attractive potential
 
     beta_term_option: Choices are ['paper', 'short-range-potential']:
         Choosing 'short-range-potential' introduces a short range potential around high
@@ -55,7 +55,6 @@ def calc_LV_Lbeta(
 
     Note this function has modifications w.r.t. the implementation in 2002.03605:
     - The norms for V_repulsive are now Gaussian (instead of linear hinge)
-    - The 'signal' contribution to L_beta is overhauled with a potential-like term
     """
     device = beta.device
 
@@ -160,7 +159,7 @@ def calc_LV_Lbeta(
     norms_att = norms[is_sig]
 
     # Power-scale the norms
-    if huberize_norm_for_V_belonging:
+    if huberize_norm_for_V_attractive:
         # Huberized version (linear but times 4)
         # Be sure to not move 'off-diagonal' away from zero
         # (i.e. norms of hits w.r.t. clusters they do _not_ belong to)
@@ -299,6 +298,134 @@ def formatted_loss_components_string(components: dict) -> str:
             .format(**{k : fkey(k) for k in components})
             )
     return s
+
+def calc_simple_clus_space_loss(
+    cluster_space_coords: torch.Tensor, # Predicted by model
+    cluster_index_per_event: torch.Tensor, # Truth hit->cluster index
+    batch: torch.Tensor,
+    # From here on just parameters
+    noise_cluster_index: int = 0, # cluster_index entries with this value are noise/noise
+    huberize_norm_for_V_attractive = True
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Isolating just the V_attractive and V_repulsive parts of object condensation,
+    w.r.t. the geometrical mean of truth cluster centers (rather than the highest
+    beta point of the truth cluster).
+
+    Most of this code is copied from `calc_LV_Lbeta`, so it's easier to try out
+    different scalings for the norms without breaking the main OC function.
+
+    See also the 'Concepts' in the doc of `calc_LV_Lbeta`.
+    """
+    # ________________________________
+    # Calculate a bunch of needed counts and indices locally
+
+    # cluster_index: unique index over events
+    # E.g. cluster_index_per_event=[ 0, 0, 1, 2, 0, 0, 1], batch=[0, 0, 0, 0, 1, 1, 1]
+    #      -> cluster_index=[ 0, 0, 1, 2, 3, 3, 4 ]
+    cluster_index, n_clusters_per_event = batch_cluster_indices(cluster_index_per_event, batch)
+    n_hits, cluster_space_dim = cluster_space_coords.size()
+    batch_size = batch.max()+1
+    n_hits_per_event = scatter_count(batch)
+
+    # Index of cluster -> event (n_clusters,)
+    batch_cluster = scatter_counts_to_indices(n_clusters_per_event)
+
+    # Per-hit boolean, indicating whether hit is sig or noise
+    is_noise = cluster_index_per_event == noise_cluster_index
+    is_sig = ~is_noise
+    n_hits_sig = is_sig.sum()
+
+    # Per-cluster boolean, indicating whether cluster is an object or noise
+    is_object = scatter_max(is_sig.long(), cluster_index)[0].bool()
+
+    # FIXME: This assumes bkg_cluster_index == 0!!
+    # Not sure how to do this in a performant way in case bkg_cluster_index != 0
+    object_index_per_event = cluster_index_per_event[is_sig] - 1
+    batch_object = batch_cluster[is_object]
+    n_objects = is_object.sum()
+
+    # ________________________________
+    # Build the masks
+
+    # Connectivity matrix from hit (row) -> cluster (column)
+    # Index to matrix, e.g.:
+    # [1, 3, 1, 0] --> [
+    #     [0, 1, 0, 0],
+    #     [0, 0, 0, 1],
+    #     [0, 1, 0, 0],
+    #     [1, 0, 0, 0]
+    #     ]
+    M = torch.nn.functional.one_hot(cluster_index).long()
+
+    # Anti-connectivity matrix; be sure not to connect hits to clusters in different events!
+    M_inv = get_inter_event_norms_mask(batch, n_clusters_per_event) - M
+
+    # Throw away noise cluster columns; we never need them
+    M = M[:,is_object]
+    M_inv = M_inv[:,is_object]
+    assert M.size() == (n_hits, n_objects)
+    assert M_inv.size() == (n_hits, n_objects)
+
+    # ________________________________
+    # Loss terms
+
+    # First calculate all cluster centers, then throw out the noise clusters
+    object_centers = scatter_mean(cluster_space_coords, cluster_index, dim=0)[is_object]
+
+    # Calculate all norms
+    # Warning: Should not be used without a mask!
+    # Contains norms between hits and objects from different events
+    # (n_hits, 1, cluster_space_dim) - (1, n_objects, cluster_space_dim)
+    #   gives (n_hits, n_objects, cluster_space_dim)
+    norms = (cluster_space_coords.unsqueeze(1) - object_centers.unsqueeze(0)).norm(dim=-1)
+    print(norms.size())
+    print((n_hits, n_objects))
+    assert norms.size() == (n_hits, n_objects)
+
+    # -------
+    # Attractive loss
+
+    # First get all the relevant norms: We only want norms of signal hits
+    # w.r.t. the object they belong to, i.e. no noise hits and no noise clusters.
+    # First select all norms of all signal hits w.r.t. all objects (filtering out
+    # the noise), mask out later
+    norms_att = norms[is_sig]
+
+    # Power-scale the norms
+    if huberize_norm_for_V_attractive:
+        # Huberized version (linear but times 4)
+        # Be sure to not move 'off-diagonal' away from zero
+        # (i.e. norms of hits w.r.t. clusters they do _not_ belong to)
+        norms_att = huber(norms_att+1e-5, 4.)
+    else:
+        # Paper version is simply norms squared (no need for mask)
+        norms_att = norms_att**2
+    assert norms_att.size() == (n_hits_sig, n_objects)
+
+    # Now apply the mask to keep only norms of signal hits w.r.t. to the object
+    # they belong to (throw away norms w.r.t. cluster they do *not* belong to)
+    norms_att *= M[is_sig]
+
+    # Sum norms_att over hits (dim=0), then sum per event, then divide by n_hits_per_event,
+    # then sum over events
+    L_attractive = (scatter_add(norms_att.sum(dim=0), batch_object) / n_hits_per_event).sum()
+
+    # -------
+    # Repulsive loss
+
+    # Get all the relevant norms: We want norms of any hit w.r.t. to 
+    # objects they do *not* belong to, i.e. no noise clusters.
+    # We do however want to keep norms of noise hits w.r.t. objects
+    # Power-scale the norms: Gaussian scaling term instead of a cone
+    # Mask out the norms of hits w.r.t. the cluster they belong to
+    norms_rep = torch.exp(-4.*norms**2) * M_inv
+
+    # Sum over hits, then sum per event, then divide by n_hits_per_event, then sum up events
+    L_repulsive = (scatter_add(norms_rep.sum(dim=0), batch_object)/n_hits_per_event).sum()
+
+    return L_attractive/batch_size, L_repulsive/batch_size
+
 
 def huber(d, delta):
     """
