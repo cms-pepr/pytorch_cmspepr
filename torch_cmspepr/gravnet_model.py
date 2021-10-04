@@ -6,6 +6,7 @@ from torch_scatter import scatter_min, scatter_max, scatter_mean
 from torch_cmspepr import GravNetConv
 from torch_cmspepr.objectcondensation import scatter_count
 
+from typing import Union, List
 
 def global_exchange(x: Tensor, batch: Tensor) -> Tensor:
     """
@@ -100,6 +101,7 @@ class GravnetModel(nn.Module):
         output_dim: int=4,
         n_gravnet_blocks: int=4,
         n_postgn_dense_blocks: int=4,
+        k: Union[List[int], int] = 40,
         ):
         super(GravnetModel, self).__init__()
         self.input_dim = input_dim
@@ -110,10 +112,15 @@ class GravnetModel(nn.Module):
         self.batchnorm1 = nn.BatchNorm1d(self.input_dim)
         self.input = nn.Linear(4*input_dim, 64)
 
+        if isinstance(k, int):
+            k = n_gravnet_blocks*[k]
+
+        assert len(k) == n_gravnet_blocks
+        
         # Note: out_channels of the internal gravnet layer
         # not clearly specified in paper
         self.gravnet_blocks = nn.ModuleList([
-            GravNetBlock(64 if i==0 else 96) for i in range(self.n_gravnet_blocks)
+            GravNetBlock(64 if i==0 else 96, k=k[i]) for i in range(self.n_gravnet_blocks)
             ])
 
         # Post-GravNet dense layers
