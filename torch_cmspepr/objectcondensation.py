@@ -83,8 +83,9 @@ def calc_LV_Lbeta(
     is_object = scatter_max(is_sig.long(), cluster_index)[0].bool()
     is_noise_cluster = ~is_object
 
-    # FIXME: This assumes bkg_cluster_index == 0!!
-    # Not sure how to do this in a performant way in case bkg_cluster_index != 0
+    # FIXME: This assumes noise_cluster_index == 0!!
+    # Not sure how to do this in a performant way in case noise_cluster_index != 0
+    if noise_cluster_index != 0: raise NotImplementedError
     object_index_per_event = cluster_index_per_event[is_sig] - 1
     object_index, n_objects_per_event = batch_cluster_indices(object_index_per_event, batch[is_sig])
     n_hits_per_object = scatter_count(object_index)
@@ -305,7 +306,8 @@ def calc_simple_clus_space_loss(
     batch: torch.Tensor,
     # From here on just parameters
     noise_cluster_index: int = 0, # cluster_index entries with this value are noise/noise
-    huberize_norm_for_V_attractive = True
+    huberize_norm_for_V_attractive = True,
+    pred_edc: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Isolating just the V_attractive and V_repulsive parts of object condensation,
@@ -314,6 +316,12 @@ def calc_simple_clus_space_loss(
 
     Most of this code is copied from `calc_LV_Lbeta`, so it's easier to try out
     different scalings for the norms without breaking the main OC function.
+
+    `pred_edc`: Predicted estimated distance-to-center.
+    This is an optional column, that should be `n_hits` long. If it is
+    passed, a third loss component is calculated based on the truth distance-to-center
+    w.r.t. predicted distance-to-center. This quantifies how close a hit is to it's center,
+    which provides an ansatz for the clustering.
 
     See also the 'Concepts' in the doc of `calc_LV_Lbeta`.
     """
@@ -339,9 +347,10 @@ def calc_simple_clus_space_loss(
     # Per-cluster boolean, indicating whether cluster is an object or noise
     is_object = scatter_max(is_sig.long(), cluster_index)[0].bool()
 
-    # FIXME: This assumes bkg_cluster_index == 0!!
-    # Not sure how to do this in a performant way in case bkg_cluster_index != 0
-    object_index_per_event = cluster_index_per_event[is_sig] - 1
+    # # FIXME: This assumes noise_cluster_index == 0!!
+    # # Not sure how to do this in a performant way in case noise_cluster_index != 0
+    # if noise_cluster_index != 0: raise NotImplementedError
+    # object_index_per_event = cluster_index_per_event[is_sig] - 1
     batch_object = batch_cluster[is_object]
     n_objects = is_object.sum()
 
@@ -371,7 +380,8 @@ def calc_simple_clus_space_loss(
     # Loss terms
 
     # First calculate all cluster centers, then throw out the noise clusters
-    object_centers = scatter_mean(cluster_space_coords, cluster_index, dim=0)[is_object]
+    cluster_centers = scatter_mean(cluster_space_coords, cluster_index, dim=0)
+    object_centers = cluster_centers[is_object]
 
     # Calculate all norms
     # Warning: Should not be used without a mask!
@@ -379,8 +389,6 @@ def calc_simple_clus_space_loss(
     # (n_hits, 1, cluster_space_dim) - (1, n_objects, cluster_space_dim)
     #   gives (n_hits, n_objects, cluster_space_dim)
     norms = (cluster_space_coords.unsqueeze(1) - object_centers.unsqueeze(0)).norm(dim=-1)
-    print(norms.size())
-    print((n_hits, n_objects))
     assert norms.size() == (n_hits, n_objects)
 
     # -------
@@ -423,8 +431,26 @@ def calc_simple_clus_space_loss(
 
     # Sum over hits, then sum per event, then divide by n_hits_per_event, then sum up events
     L_repulsive = (scatter_add(norms_rep.sum(dim=0), batch_object)/n_hits_per_event).sum()
+    
+    L_attractive /= batch_size
+    L_repulsive /= batch_size
 
-    return L_attractive/batch_size, L_repulsive/batch_size
+    # -------
+    # Optional: edc column
+
+    if pred_edc is not None:
+        n_hits_per_cluster = scatter_count(cluster_index)
+        cluster_centers_expanded = torch.index_select(cluster_centers, 0, cluster_index)
+        assert cluster_centers_expanded.size() == (n_hits, cluster_space_dim)
+        truth_edc = (cluster_space_coords - cluster_centers_expanded).norm(dim=-1)
+        assert pred_edc.size() == (n_hits,)
+        d_per_hit = (pred_edc-truth_edc)**2
+        d_per_object = scatter_add(d_per_hit, cluster_index)[is_object]
+        assert d_per_object.size() == (n_objects,)
+        L_edc = (scatter_add(d_per_object, batch_object)/n_hits_per_event).sum()
+        return L_attractive, L_repulsive, L_edc
+
+    return L_attractive, L_repulsive
 
 
 def huber(d, delta):
@@ -517,11 +543,11 @@ def scatter_count(input: torch.Tensor):
     Returns ordered counts over an index array
 
     Example:
-    input:  [0, 0, 0, 1, 1, 2, 2]
-    output: [3, 2, 2]
+    >>> scatter_count(torch.Tensor([0, 0, 0, 1, 1, 2, 2])) # input
+    >>> [3, 2, 2]
 
-    Index assumptions like in torch_scatter, so:
-    scatter_count(torch.Tensor([1, 1, 1, 2, 2, 4, 4]))
+    Index assumptions work like in torch_scatter, so:
+    >>> scatter_count(torch.Tensor([1, 1, 1, 2, 2, 4, 4]))
     >>> tensor([0, 3, 2, 0, 2])
     """
     return scatter_add(torch.ones_like(input, dtype=torch.long), input.long())
