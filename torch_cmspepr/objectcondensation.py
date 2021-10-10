@@ -249,7 +249,7 @@ def calc_LV_Lbeta(
         L_beta_sig = L_beta_norms_term + L_beta_logbeta_term
 
     else:
-        valid_options = ['paper', 'beta_term_options']
+        valid_options = ['paper', 'short-range-potential']
         raise ValueError(f'beta_term_option "{beta_term_option}" is not valid, choose from {valid_options}')
     
     L_beta = L_beta_noise + L_beta_sig
@@ -267,7 +267,7 @@ def calc_LV_Lbeta(
             L_beta_noise = L_beta_noise / batch_size,
             L_beta_sig = L_beta_sig / batch_size,
             )
-        if beta_term_option == 'beta_term_options':
+        if beta_term_option == 'short-range-potential':
             components['L_beta_norms_term'] = L_beta_norms_term / batch_size
             components['L_beta_logbeta_term'] = L_beta_logbeta_term / batch_size
     if DEBUG:
@@ -390,6 +390,7 @@ def calc_simple_clus_space_loss(
     #   gives (n_hits, n_objects, cluster_space_dim)
     norms = (cluster_space_coords.unsqueeze(1) - object_centers.unsqueeze(0)).norm(dim=-1)
     assert norms.size() == (n_hits, n_objects)
+
 
     # -------
     # Attractive loss

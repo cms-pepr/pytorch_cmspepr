@@ -103,9 +103,9 @@ class BlobsDataset(Dataset):
         
 
 class TauDataset(Dataset):
-    """
+    """Tau dataset.
+    
     Features in x:
-
     recHitEnergy,
     recHitEta,
     zeroFeature, #indicator if it is track or not
@@ -116,11 +116,19 @@ class TauDataset(Dataset):
     recHitZ,
     recHitTime
     (https://github.com/cms-pepr/HGCalML/blob/master/modules/datastructures/TrainData_NanoML.py#L211-L221)
+
+    Args:
+        flip (bool): If True, flips the negative endcap z-values to positive
+        reduce_noise (float): Randomly delete a fraction of noise. Useful
+            to speed up training.
     """
-    def __init__(self, path, flip=True):
+    def __init__(self, path, flip=True, reduce_noise: float=None):
         super(TauDataset, self).__init__(path)
         self.npzs = list(sorted(glob.iglob(path + '/*.npz')))
         self.flip = flip
+        self.reduce_noise = reduce_noise
+        self.noise_index = -1
+        self.noise_mask_cache = {}
 
     def blacklist(self, npzs):
         """
@@ -132,11 +140,19 @@ class TauDataset(Dataset):
     def get(self, i):
         d = np.load(self.npzs[i])
         x = d['recHitFeatures']
+        y = d['recHitTruthClusterIdx'].squeeze()
         if self.flip and np.mean(x[:,7]) < 0:
             # Negative endcap: Flip z-dependent coordinates
             x[:,1] *= -1 # eta
             x[:,7] *= -1 # z
-        cluster_index = incremental_cluster_index_np(d['recHitTruthClusterIdx'].squeeze())
+        if self.reduce_noise:
+            # Throw away a fraction of noise
+            # Have to be careful to throw away to same noise upon
+            # future calls of this function.
+            mask = self.noise_mask_cache.setdefault(i, mask_fraction_of_noise(y, self.reduce_noise, self.noise_index))
+            x = x[mask]
+            y = y[mask]
+        cluster_index = incremental_cluster_index_np(y.squeeze(), noise_index=self.noise_index)
         if np.all(cluster_index == 0): print('WARNING: No objects in', self.npzs[i])
         truth_cluster_props = np.hstack((
             d['recHitTruthEnergy'],
@@ -144,6 +160,7 @@ class TauDataset(Dataset):
             d['recHitTruthTime'],
             d['recHitTruthID'],
             ))
+        if self.reduce_noise: truth_cluster_props = truth_cluster_props[mask]
         assert truth_cluster_props.shape == (x.shape[0], 5)
         order = cluster_index.argsort()
         return Data(
@@ -162,8 +179,8 @@ class TauDataset(Dataset):
         """
         Creates two new instances of TauDataset with a fraction of events split
         """
-        left = self.__class__(self.root)
-        right = self.__class__(self.root)
+        left = self.__class__(self.root, self.flip, self.reduce_noise)
+        right = self.__class__(self.root, self.flip, self.reduce_noise)
         split_index = int(fraction*len(self))
         left.npzs = self.npzs[:split_index]
         right.npzs = self.npzs[split_index:]
@@ -210,3 +227,13 @@ def incremental_cluster_index_np(input: np.array, noise_index=None):
             # Still reserve 0 for noise, even if it's not present
             cluster_index_map += 1
     return np.take(cluster_index_map, locations)
+
+def mask_fraction_of_noise(y: np.array, reduce_fraction: float, noise_index: int=-1) -> np.array:
+    """Create a mask that throws out a fraction of noise (but keeps all signal)."""
+    is_noise = y == noise_index
+    n_noise = is_noise.sum()
+    n_target_noise = (1.-reduce_fraction) * n_noise
+    noise_mask = np.random.permutation(n_noise) < n_target_noise
+    mask = np.ones(y.shape[0], dtype=bool)
+    mask[is_noise] = noise_mask
+    return mask
