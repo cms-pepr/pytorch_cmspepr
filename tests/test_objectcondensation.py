@@ -82,6 +82,67 @@ def test_make_norm_mask():
             ])
         )
 
+def test_reincrementalize():
+    y = torch.LongTensor([
+        0, 0, 0, 1, 1, 3, 3,
+        0, 0, 0, 0, 0, 2, 2, 3, 3,
+        0, 0, 1, 1
+        ])
+    batch = torch.LongTensor([
+        0, 0, 0, 0, 0, 0, 0,
+        1, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2,
+        ])
+    expected = torch.LongTensor([
+        0, 0, 0, 1, 1, 2, 2,
+        0, 0, 0, 0, 0, 1, 1, 2, 2,
+        0, 0, 1, 1
+        ])
+    assert torch.allclose(oc.reincrementalize(y, batch), expected)
+    # Should not depend on order
+    order = torch.randperm(y.size(0))
+    y = y[order]
+    batch = batch[order]
+    expected = expected[order]
+    assert torch.allclose(oc.reincrementalize(y, batch), expected)
+    # Should not do anything if there are no holes
+    y = torch.LongTensor([
+        0, 0, 0, 1, 1, 2, 2,
+        0, 0, 0, 0, 0, 1, 2, 3, 3,
+        0, 0, 1, 1
+        ])
+    batch = torch.LongTensor([
+        0, 0, 0, 0, 0, 0, 0,
+        1, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2,
+        ])
+    expected = torch.LongTensor([
+        0, 0, 0, 1, 1, 2, 2,
+        0, 0, 0, 0, 0, 1, 2, 3, 3,
+        0, 0, 1, 1
+        ])
+    assert torch.allclose(oc.reincrementalize(y, batch), expected)
+    # Should work for multiple consecutive holes
+    y = torch.LongTensor([
+        0, 0, 0, 5, 5, 100, 100,
+        0, 0, 30, 30
+        ])
+    batch = torch.LongTensor([
+        0, 0, 0, 0, 0, 0, 0,
+        1, 1, 1, 1,
+        ])
+    expected = torch.LongTensor([
+        0, 0, 0, 1, 1, 2, 2,
+        0, 0, 1, 1
+        ])
+    assert torch.allclose(oc.reincrementalize(y, batch), expected)
+    # And that should also work for the same thing unordered
+    order = torch.randperm(y.size(0))
+    y = y[order]
+    batch = batch[order]
+    expected = expected[order]
+    assert torch.allclose(oc.reincrementalize(y, batch), expected)
+
 
 def test_calc_LV_Lbeta_runs():
     """

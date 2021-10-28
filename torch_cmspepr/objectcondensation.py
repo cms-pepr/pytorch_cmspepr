@@ -283,8 +283,7 @@ def formatted_loss_components_string(components: dict) -> str:
     fractions = { k : v/total_loss for k, v in components.items() }
     fkey = lambda key: f'{components[key]:+.4f} ({100.*fractions[key]:.1f}%)'
     s = (
-        'L_V+L_beta = {L:.4f}'
-        '\n  L_V                 = {L_V}'
+        '  L_V                 = {L_V}'
         '\n    L_V_attractive      = {L_V_attractive}'
         '\n    L_V_repulsive       = {L_V_repulsive}'
         '\n  L_beta              = {L_beta}'
@@ -298,6 +297,8 @@ def formatted_loss_components_string(components: dict) -> str:
             '\n      L_beta_logbeta_term = {L_beta_logbeta_term}'
             .format(**{k : fkey(k) for k in components})
             )
+    if 'L_noise_filter' in components:
+        s += f'\n  L_noise_filter = {fkey("L_noise_filter")}'
     return s
 
 def calc_simple_clus_space_loss(
@@ -598,3 +599,40 @@ def get_inter_event_norms_mask(batch: torch.LongTensor, nclusters_per_event: tor
     batch_expanded_as_ones = (batch == torch.arange(batch.max()+1, dtype=torch.long, device=device).unsqueeze(-1) ).long()
     # Then repeat_interleave it to expand it to nclusters rows, and transpose to get (nhits x nclusters)
     return batch_expanded_as_ones.repeat_interleave(nclusters_per_event, dim=0).T
+
+def isin(ar1, ar2):
+    """To be replaced by torch.isin for newer releases of torch"""
+    return (ar1[..., None] == ar2).any(-1)
+
+def reincrementalize(y: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+    """Re-indexes y so that missing clusters are no longer counted.
+
+    Example:
+        >>> y = torch.LongTensor([
+            0, 0, 0, 1, 1, 3, 3,
+            0, 0, 0, 0, 0, 2, 2, 3, 3,
+            0, 0, 1, 1
+            ])
+        >>> batch = torch.LongTensor([
+            0, 0, 0, 0, 0, 0, 0,
+            1, 1, 1, 1, 1, 1, 1, 1, 1,
+            2, 2, 2, 2,
+            ])
+        >>> print(reincrementalize(y, batch))
+        tensor([0, 0, 0, 1, 1, 2, 2, 0, 0, 0, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1])
+    """
+    y_offset, n_per_event = batch_cluster_indices(y, batch)
+    offset = y_offset - y
+    n_clusters = n_per_event.sum()
+    holes = (~isin(torch.arange(n_clusters, device=y.device), y_offset)).nonzero().squeeze(-1)
+    n_per_event_without_holes = n_per_event.clone()
+    n_per_event_cumsum = n_per_event.cumsum(0)
+    for hole in holes.sort(descending=True).values:
+        y_offset[y_offset > hole] -= 1
+        i_event = (hole > n_per_event_cumsum).long().argmin()
+        n_per_event_without_holes[i_event] -= 1
+    offset_per_event = torch.zeros_like(n_per_event_without_holes)
+    offset_per_event[1:] = n_per_event_without_holes.cumsum(0)[:-1]
+    offset_without_holes = torch.gather(offset_per_event,0, batch).long()
+    reincrementalized = y_offset - offset_without_holes
+    return reincrementalized

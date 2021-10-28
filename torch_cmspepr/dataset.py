@@ -100,21 +100,20 @@ class BlobsDataset(Dataset):
 
     def len(self):
         return self.n_events
-        
 
 class TauDataset(Dataset):
     """Tau dataset.
     
     Features in x:
-    recHitEnergy,
-    recHitEta,
-    zeroFeature, #indicator if it is track or not
-    recHitTheta,
-    recHitR,
-    recHitX,
-    recHitY,
-    recHitZ,
-    recHitTime
+    0 recHitEnergy,
+    1 recHitEta,
+    2 zeroFeature, #indicator if it is track or not
+    3 recHitTheta,
+    4 recHitR,
+    5 recHitX,
+    6 recHitY,
+    7 recHitZ,
+    8 recHitTime
     (https://github.com/cms-pepr/HGCalML/blob/master/modules/datastructures/TrainData_NanoML.py#L211-L221)
 
     Args:
