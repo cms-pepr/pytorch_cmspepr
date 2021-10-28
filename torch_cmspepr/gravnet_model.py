@@ -6,7 +6,7 @@ from torch_scatter import scatter_min, scatter_max, scatter_mean
 from torch_cmspepr import GravNetConv
 from torch_cmspepr.objectcondensation import scatter_count
 
-from typing import Union, List
+from typing import Tuple, Union, List
 
 def global_exchange(x: Tensor, batch: Tensor) -> Tensor:
     """
@@ -162,3 +162,44 @@ class GravnetModel(nn.Module):
         x = self.output(x)
         assert x.device == device
         return x
+
+
+class NoiseFilterModel(nn.Module):
+
+    def __init__(
+        self, 
+        input_dim: int=5,
+        output_dim: int=2,
+        ):
+        super(NoiseFilterModel, self).__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.network = nn.Sequential(
+            nn.BatchNorm1d(self.input_dim),
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 2),
+            nn.LogSoftmax()
+            )
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.network(x)
+
+class GravnetModelWithNoiseFilter(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(GravnetModelWithNoiseFilter, self).__init__()
+        self.signal_threshold = kwargs.pop('signal_threshold', .5)
+        self.gravnet = GravnetModel(*args, **kwargs)
+        self.noise_filter = NoiseFilterModel(input_dim=self.gravnet.input_dim)
+
+    def forward(self, x: Tensor, batch: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        out_noise_filter = self.noise_filter(x)
+        pass_noise_filter = torch.exp(out_noise_filter[:,1]) > self.signal_threshold
+        # Get the GravNet model output on only hits that pass the noise threshold
+        out_gravnet = self.gravnet(x[pass_noise_filter], batch[pass_noise_filter])
+        return out_noise_filter, pass_noise_filter, out_gravnet

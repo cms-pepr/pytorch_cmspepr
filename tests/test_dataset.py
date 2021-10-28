@@ -35,3 +35,12 @@ def test_incremental_cluster_index_np():
         dataset.incremental_cluster_index_np(input, noise_index=-99),
         np.array([2, 1, 1, 2, 1, 2, 2, 3, 1, 1])
         )
+
+def test_noise_reduction():
+    input = np.array([9, -1, 9, 9, -1, -1, -1, 9, -1, -1, -1, -1, 9])
+    mask = dataset.mask_fraction_of_noise(input, .5)
+    assert mask.shape[0] == input.shape[0]
+    assert mask.sum() == 5+4
+    out = input[mask]
+    assert (out == 9).sum() == (input == 9).sum()
+    assert (out == -1).sum() == .5*(input == -1).sum()

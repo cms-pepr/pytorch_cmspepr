@@ -83,8 +83,9 @@ def calc_LV_Lbeta(
     is_object = scatter_max(is_sig.long(), cluster_index)[0].bool()
     is_noise_cluster = ~is_object
 
-    # FIXME: This assumes bkg_cluster_index == 0!!
-    # Not sure how to do this in a performant way in case bkg_cluster_index != 0
+    # FIXME: This assumes noise_cluster_index == 0!!
+    # Not sure how to do this in a performant way in case noise_cluster_index != 0
+    if noise_cluster_index != 0: raise NotImplementedError
     object_index_per_event = cluster_index_per_event[is_sig] - 1
     object_index, n_objects_per_event = batch_cluster_indices(object_index_per_event, batch[is_sig])
     n_hits_per_object = scatter_count(object_index)
@@ -248,7 +249,7 @@ def calc_LV_Lbeta(
         L_beta_sig = L_beta_norms_term + L_beta_logbeta_term
 
     else:
-        valid_options = ['paper', 'beta_term_options']
+        valid_options = ['paper', 'short-range-potential']
         raise ValueError(f'beta_term_option "{beta_term_option}" is not valid, choose from {valid_options}')
     
     L_beta = L_beta_noise + L_beta_sig
@@ -266,7 +267,7 @@ def calc_LV_Lbeta(
             L_beta_noise = L_beta_noise / batch_size,
             L_beta_sig = L_beta_sig / batch_size,
             )
-        if beta_term_option == 'beta_term_options':
+        if beta_term_option == 'short-range-potential':
             components['L_beta_norms_term'] = L_beta_norms_term / batch_size
             components['L_beta_logbeta_term'] = L_beta_logbeta_term / batch_size
     if DEBUG:
@@ -282,8 +283,7 @@ def formatted_loss_components_string(components: dict) -> str:
     fractions = { k : v/total_loss for k, v in components.items() }
     fkey = lambda key: f'{components[key]:+.4f} ({100.*fractions[key]:.1f}%)'
     s = (
-        'L_V+L_beta = {L:.4f}'
-        '\n  L_V                 = {L_V}'
+        '  L_V                 = {L_V}'
         '\n    L_V_attractive      = {L_V_attractive}'
         '\n    L_V_repulsive       = {L_V_repulsive}'
         '\n  L_beta              = {L_beta}'
@@ -297,6 +297,8 @@ def formatted_loss_components_string(components: dict) -> str:
             '\n      L_beta_logbeta_term = {L_beta_logbeta_term}'
             .format(**{k : fkey(k) for k in components})
             )
+    if 'L_noise_filter' in components:
+        s += f'\n  L_noise_filter = {fkey("L_noise_filter")}'
     return s
 
 def calc_simple_clus_space_loss(
@@ -305,7 +307,8 @@ def calc_simple_clus_space_loss(
     batch: torch.Tensor,
     # From here on just parameters
     noise_cluster_index: int = 0, # cluster_index entries with this value are noise/noise
-    huberize_norm_for_V_attractive = True
+    huberize_norm_for_V_attractive = True,
+    pred_edc: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Isolating just the V_attractive and V_repulsive parts of object condensation,
@@ -314,6 +317,12 @@ def calc_simple_clus_space_loss(
 
     Most of this code is copied from `calc_LV_Lbeta`, so it's easier to try out
     different scalings for the norms without breaking the main OC function.
+
+    `pred_edc`: Predicted estimated distance-to-center.
+    This is an optional column, that should be `n_hits` long. If it is
+    passed, a third loss component is calculated based on the truth distance-to-center
+    w.r.t. predicted distance-to-center. This quantifies how close a hit is to it's center,
+    which provides an ansatz for the clustering.
 
     See also the 'Concepts' in the doc of `calc_LV_Lbeta`.
     """
@@ -339,9 +348,10 @@ def calc_simple_clus_space_loss(
     # Per-cluster boolean, indicating whether cluster is an object or noise
     is_object = scatter_max(is_sig.long(), cluster_index)[0].bool()
 
-    # FIXME: This assumes bkg_cluster_index == 0!!
-    # Not sure how to do this in a performant way in case bkg_cluster_index != 0
-    object_index_per_event = cluster_index_per_event[is_sig] - 1
+    # # FIXME: This assumes noise_cluster_index == 0!!
+    # # Not sure how to do this in a performant way in case noise_cluster_index != 0
+    # if noise_cluster_index != 0: raise NotImplementedError
+    # object_index_per_event = cluster_index_per_event[is_sig] - 1
     batch_object = batch_cluster[is_object]
     n_objects = is_object.sum()
 
@@ -371,7 +381,8 @@ def calc_simple_clus_space_loss(
     # Loss terms
 
     # First calculate all cluster centers, then throw out the noise clusters
-    object_centers = scatter_mean(cluster_space_coords, cluster_index, dim=0)[is_object]
+    cluster_centers = scatter_mean(cluster_space_coords, cluster_index, dim=0)
+    object_centers = cluster_centers[is_object]
 
     # Calculate all norms
     # Warning: Should not be used without a mask!
@@ -379,9 +390,8 @@ def calc_simple_clus_space_loss(
     # (n_hits, 1, cluster_space_dim) - (1, n_objects, cluster_space_dim)
     #   gives (n_hits, n_objects, cluster_space_dim)
     norms = (cluster_space_coords.unsqueeze(1) - object_centers.unsqueeze(0)).norm(dim=-1)
-    print(norms.size())
-    print((n_hits, n_objects))
     assert norms.size() == (n_hits, n_objects)
+
 
     # -------
     # Attractive loss
@@ -423,8 +433,26 @@ def calc_simple_clus_space_loss(
 
     # Sum over hits, then sum per event, then divide by n_hits_per_event, then sum up events
     L_repulsive = (scatter_add(norms_rep.sum(dim=0), batch_object)/n_hits_per_event).sum()
+    
+    L_attractive /= batch_size
+    L_repulsive /= batch_size
 
-    return L_attractive/batch_size, L_repulsive/batch_size
+    # -------
+    # Optional: edc column
+
+    if pred_edc is not None:
+        n_hits_per_cluster = scatter_count(cluster_index)
+        cluster_centers_expanded = torch.index_select(cluster_centers, 0, cluster_index)
+        assert cluster_centers_expanded.size() == (n_hits, cluster_space_dim)
+        truth_edc = (cluster_space_coords - cluster_centers_expanded).norm(dim=-1)
+        assert pred_edc.size() == (n_hits,)
+        d_per_hit = (pred_edc-truth_edc)**2
+        d_per_object = scatter_add(d_per_hit, cluster_index)[is_object]
+        assert d_per_object.size() == (n_objects,)
+        L_edc = (scatter_add(d_per_object, batch_object)/n_hits_per_event).sum()
+        return L_attractive, L_repulsive, L_edc
+
+    return L_attractive, L_repulsive
 
 
 def huber(d, delta):
@@ -517,11 +545,11 @@ def scatter_count(input: torch.Tensor):
     Returns ordered counts over an index array
 
     Example:
-    input:  [0, 0, 0, 1, 1, 2, 2]
-    output: [3, 2, 2]
+    >>> scatter_count(torch.Tensor([0, 0, 0, 1, 1, 2, 2])) # input
+    >>> [3, 2, 2]
 
-    Index assumptions like in torch_scatter, so:
-    scatter_count(torch.Tensor([1, 1, 1, 2, 2, 4, 4]))
+    Index assumptions work like in torch_scatter, so:
+    >>> scatter_count(torch.Tensor([1, 1, 1, 2, 2, 4, 4]))
     >>> tensor([0, 3, 2, 0, 2])
     """
     return scatter_add(torch.ones_like(input, dtype=torch.long), input.long())
@@ -571,3 +599,40 @@ def get_inter_event_norms_mask(batch: torch.LongTensor, nclusters_per_event: tor
     batch_expanded_as_ones = (batch == torch.arange(batch.max()+1, dtype=torch.long, device=device).unsqueeze(-1) ).long()
     # Then repeat_interleave it to expand it to nclusters rows, and transpose to get (nhits x nclusters)
     return batch_expanded_as_ones.repeat_interleave(nclusters_per_event, dim=0).T
+
+def isin(ar1, ar2):
+    """To be replaced by torch.isin for newer releases of torch"""
+    return (ar1[..., None] == ar2).any(-1)
+
+def reincrementalize(y: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+    """Re-indexes y so that missing clusters are no longer counted.
+
+    Example:
+        >>> y = torch.LongTensor([
+            0, 0, 0, 1, 1, 3, 3,
+            0, 0, 0, 0, 0, 2, 2, 3, 3,
+            0, 0, 1, 1
+            ])
+        >>> batch = torch.LongTensor([
+            0, 0, 0, 0, 0, 0, 0,
+            1, 1, 1, 1, 1, 1, 1, 1, 1,
+            2, 2, 2, 2,
+            ])
+        >>> print(reincrementalize(y, batch))
+        tensor([0, 0, 0, 1, 1, 2, 2, 0, 0, 0, 0, 0, 1, 1, 2, 2, 0, 0, 1, 1])
+    """
+    y_offset, n_per_event = batch_cluster_indices(y, batch)
+    offset = y_offset - y
+    n_clusters = n_per_event.sum()
+    holes = (~isin(torch.arange(n_clusters, device=y.device), y_offset)).nonzero().squeeze(-1)
+    n_per_event_without_holes = n_per_event.clone()
+    n_per_event_cumsum = n_per_event.cumsum(0)
+    for hole in holes.sort(descending=True).values:
+        y_offset[y_offset > hole] -= 1
+        i_event = (hole > n_per_event_cumsum).long().argmin()
+        n_per_event_without_holes[i_event] -= 1
+    offset_per_event = torch.zeros_like(n_per_event_without_holes)
+    offset_per_event[1:] = n_per_event_without_holes.cumsum(0)[:-1]
+    offset_without_holes = torch.gather(offset_per_event,0, batch).long()
+    reincrementalized = y_offset - offset_without_holes
+    return reincrementalized
