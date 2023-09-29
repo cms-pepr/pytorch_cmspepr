@@ -1,106 +1,101 @@
 import os
-import sys
-import glob
 import os.path as osp
-from itertools import product
 from setuptools import setup, find_packages
+from textwrap import dedent
 
 import torch
-from torch.__config__ import parallel_info
 from torch.utils.cpp_extension import BuildExtension
 from torch.utils.cpp_extension import CppExtension, CUDAExtension, CUDA_HOME
 
-WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
-suffices = ['cpu', 'cuda'] if WITH_CUDA else ['cpu']
-if os.getenv('FORCE_CUDA', '0') == '1':
-    suffices = ['cuda', 'cpu']
-if os.getenv('FORCE_ONLY_CUDA', '0') == '1':
-    suffices = ['cuda']
+CUDA_AVAILABLE = torch.cuda.is_available() and CUDA_HOME is not None
+
+DO_CPU = True
+DO_CUDA = CUDA_AVAILABLE
+
 if os.getenv('FORCE_ONLY_CPU', '0') == '1':
-    suffices = ['cpu']
+    print('FORCE_ONLY_CPU: Only compiling CPU extensions')
+    DO_CPU = True
+    DO_CUDA = False
+elif os.getenv('FORCE_ONLY_CUDA', '0') == '1':
+    print('FORCE_ONLY_CUDA: Only compiling CUDA extensions')
+    DO_CPU = False
+    DO_CUDA = True
+elif os.getenv('FORCE_CUDA', '0') == '1':
+    print('FORCE_CUDA: Forcing compilation of CUDA extensions')
+    if not CUDA_AVAILABLE: print(f'{CUDA_AVAILABLE=}, high chance of failure')
+    DO_CUDA = True
 
 BUILD_DOCS = os.getenv('BUILD_DOCS', '0') == '1'
 
 
-def get_extensions():
-    extensions = []
-
-    extensions_dir = osp.join(osp.dirname(osp.abspath(__file__)), 'csrc')
-    main_files = glob.glob(osp.join(extensions_dir, '*.cpp'))
-
-    for main, suffix in product(main_files, suffices):
-        define_macros = []
-        extra_compile_args = {'cxx': ['-O2']}
-        extra_link_args = ['-s']
-
-        info = parallel_info()
-        if 'backend: OpenMP' in info and 'OpenMP not found' not in info:
-            extra_compile_args['cxx'] += ['-DAT_PARALLEL_OPENMP']
-            if sys.platform == 'win32':
-                extra_compile_args['cxx'] += ['/openmp']
-            else:
-                extra_compile_args['cxx'] += ['-fopenmp']
-        else:
-            print('Compiling without OpenMP...')
-
-        if suffix == 'cuda':
-            define_macros += [('WITH_CUDA', None)]
-            nvcc_flags = os.getenv('NVCC_FLAGS', '')
-            nvcc_flags = [] if nvcc_flags == '' else nvcc_flags.split(' ')
-            nvcc_flags += ['--expt-relaxed-constexpr', '-O2']
-            extra_compile_args['nvcc'] = nvcc_flags
-
-        name = main.split(os.sep)[-1][:-4]
-        sources = [main]
-
-        path = osp.join(extensions_dir, 'cpu', f'{name}_cpu.cpp')
-        if osp.exists(path):
-            sources += [path]
-
-        path = osp.join(extensions_dir, 'cuda', f'{name}_cuda.cu')
-        if suffix == 'cuda' and osp.exists(path):
-            sources += [path]
-
-        Extension = CppExtension if suffix == 'cpu' else CUDAExtension
-        extension = Extension(
-            f'torch_cmspepr._{name}_{suffix}',
-            sources,
-            include_dirs=[extensions_dir],
-            define_macros=define_macros,
-            extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
+# Define extensions
+extensions_dir = osp.join(osp.dirname(osp.abspath(__file__)), 'extensions')
+cpu_kwargs = dict(
+    include_dirs=[extensions_dir],
+    extra_compile_args={'cxx': ['-O2']},
+    extra_link_args=['-s']
+    )
+extensions_cpu = [
+    CppExtension('select_knn_cpu', ['extensions/select_knn_cpu.cpp'], **cpu_kwargs)
+    ]
+cuda_kwargs = dict(
+    include_dirs=[extensions_dir],
+    extra_compile_args={'cxx': ['-O2'], 'nvcc': ['--expt-relaxed-constexpr', '-O2']},
+    extra_link_args=['-s']
+    )
+extensions_cuda = [
+    CUDAExtension(
+        'select_knn_cuda',
+        ['extensions/select_knn_cuda.cpp', 'extensions/select_knn_cuda_kernel.cu'],
+        **cuda_kwargs
         )
-        extensions += [extension]
+    ]
 
-    return extensions
+extensions = []
+if DO_CPU: extensions.extend(extensions_cpu)
+if DO_CUDA: extensions.extend(extensions_cuda)
 
 
-install_requires = []
-setup_requires = ['pytest-runner']
+# Print extensions
+def repr_ext(ext):
+    """
+    Debug print for an extension
+    """
+    return dedent(f"""\
+        {ext.name}
+          sources: {', '.join(ext.sources)}
+          extra_compile_args: {ext.extra_compile_args}
+          extra_link_args: {ext.extra_link_args}
+        """)
+
+print('\n---------------------\nExtensions:')
+for ext in extensions: print(repr_ext(ext))
+print('---------------------')
+
+
+# Setup call
 tests_require = ['pytest', 'pytest-cov', 'scipy']
-
-print(get_extensions())
-
 setup(
     name='torch_cmspepr',
-    version='0.0.1',
-    author='Jan Kieseler (adaptations to torch by G. Pradhan)',
-    author_email='gpradhan@fnal.gov',
+    version='1.0.0',
+    author='Lindsey Gray <Lindsey.Gray@cern.ch>, Jan Kieseler <jan.kieseler@cern.ch>, Thomas Klijnsma <thomasklijnsma@gmail.com>',
+    author_email='Lindsey.Gray@cern.ch',
     url='',
     description=('PyTorch Extension Library for HGCAL Specific knn optimizations'),
     keywords=[
         'pytorch',
+        'knn',
         'geometric-deep-learning',
         'graph-neural-networks',
         'cluster-algorithms',
     ],
     license='MIT',
     python_requires='>=3.6',
-    install_requires=install_requires,
-    setup_requires=setup_requires,
+    install_requires=[],
+    setup_requires=['pytest-runner'],
     tests_require=tests_require,
     extras_require={'test': tests_require},
-    ext_modules=get_extensions() if not BUILD_DOCS else [],
+    ext_modules=extensions if not BUILD_DOCS else [],
     cmdclass={
         'build_ext':
         BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=False)
