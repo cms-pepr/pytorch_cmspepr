@@ -76,6 +76,19 @@ def test_knn_graph_cpu():
     print(expected)
     assert torch.allclose(edge_index, expected)
 
+def test_knn_graph_cpu_1dim():
+    from torch_cmspepr import knn_graph
+    nodes = torch.FloatTensor([0.1, 0.2, 0.5, 0.6])
+    edge_index = knn_graph(nodes, 2, max_radius=.2, loop=True)
+    expected = torch.LongTensor([
+        [0, 0, 1, 1, 2, 2, 3, 3],
+        [0, 1, 1, 0, 2, 3, 3, 2],
+        ])
+    print('Found edge_index:')
+    print(edge_index)
+    print('Expected edge_index:')
+    print(expected)
+    assert torch.allclose(edge_index, expected)
 
 def test_knn_graph_cuda():
     from torch_cmspepr import knn_graph
@@ -96,7 +109,6 @@ def test_knn_graph_cuda():
     print(expected_edge_index_loop)
     assert torch.allclose(edge_index, expected_edge_index_loop.to(gpu))
 
-
 def test_select_knn_cpu():
     from torch_cmspepr import select_knn
     neigh_indices, neigh_dist_sq = select_knn(nodes, k=3, batch_x=batch, max_radius=.2)
@@ -110,7 +122,6 @@ def test_select_knn_cpu():
     print(neigh_dist_sq)
     assert torch.allclose(neigh_indices, expected_neigh_indices)
     assert torch.allclose(neigh_dist_sq, expected_neigh_dist_sq)
-
 
 def test_select_knn_cuda():
     from torch_cmspepr import select_knn
