@@ -67,6 +67,14 @@ def test_knn_graph_cpu():
     print('Expected edge_index:')
     print(expected_edge_index_loop)
     assert torch.allclose(edge_index, expected_edge_index_loop)
+    # k=3 with loops
+    edge_index = knn_graph(nodes, 3, batch, max_radius=.2, loop=True, flow='target_to_source')
+    print('Found edge_index:')
+    print(edge_index)
+    print('Expected edge_index:')
+    expected = torch.flip(expected_edge_index_loop, [0])
+    print(expected)
+    assert torch.allclose(edge_index, expected)
 
 
 def test_knn_graph_cuda():
