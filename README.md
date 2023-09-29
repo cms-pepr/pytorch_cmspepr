@@ -75,7 +75,7 @@ Installing _only_ the CPU or CUDA extensions is supported:
 ```bash
 FORCE_CPU_ONLY=1 pip install -e .  # Only compile C++ extensions
 FORCE_CUDA_ONLY=1 pip install -e .  # Only compile CUDA extenstions
-FORCE_CUDA pip install -e .  # Try to compile CUDA extenstion even if no device found
+FORCE_CUDA=1 pip install -e .  # Try to compile CUDA extenstion even if no device found
 ```
 
 If you only want to test the compilation of the extensions:

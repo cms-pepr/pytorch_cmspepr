@@ -1,9 +1,6 @@
 import os.path as osp
 from typing import Optional, Tuple
-
 import torch
-
-from .logger import logger
 
 
 @torch.jit.script
@@ -38,7 +35,6 @@ def select_knn(x: torch.Tensor,
         batch_x = torch.tensor([0, 0, 0, 0])
         assign_index = select_knn(x, 2, batch_x)
     """
-
     x = x.view(-1, 1) if x.dim() == 1 else x
     x = x.contiguous()
 
@@ -122,12 +118,8 @@ def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
         batch = torch.tensor([0, 0, 0, 0])
         edge_index = knn_graph(x, k=2, batch=batch, loop=False)
     """
-
     assert flow in ['source_to_target', 'target_to_source']
-
-    K = k if loop else k + 1
-    start = 0 if loop else 1
-    
+    K = k if loop else k + 1    
     neighbours, edge_dists = select_knn(x, K, batch, max_radius=max_radius) # select_knn is always in "loop" mode
     
     # neighbours has the following (n_neigh x k) structure:
@@ -155,19 +147,3 @@ def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
     edge_index = edge_index[:,(targets>=0)]
 
     return edge_index
-
-    # sources = torch.arange(neighbours.shape[0], device=neighbours.device)[:, None].expand(-1, k).contiguous().view(-1)
-    # targets = neighbours[:,start:].contiguous().view(-1)
-    
-    # edge_index = torch.cat([sources[None, :], targets[None, :]], dim = 0)
-    
-    # if flow == 'source_to_target':
-    #     row, col = edge_index[1], edge_index[0]
-    # else:
-    #     row, col = edge_index[0], edge_index[1]
-
-    # if not loop:
-    #     mask = row != col
-    #     row, col = row[mask], col[mask]
-
-    # return torch.stack([row, col], dim=0)
