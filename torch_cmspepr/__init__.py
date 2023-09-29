@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import os.path as osp
 import logging
 import torch
@@ -33,6 +34,7 @@ def setup_logger(name: str = "cmspepr") -> logging.Logger:
         logger.addHandler(handler)
     return logger
 
+
 logger = setup_logger()
 
 
@@ -42,6 +44,7 @@ def load_ops(so_file):
         logger.error(f'Could not load op: No file {so_file}')
     else:
         torch.ops.load_library(so_file)
+
 
 THISDIR = osp.dirname(osp.abspath(__file__))
 load_ops(osp.join(THISDIR, "../select_knn_cpu.so"))

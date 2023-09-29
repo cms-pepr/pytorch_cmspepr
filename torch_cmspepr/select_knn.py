@@ -1,15 +1,16 @@
-import os.path as osp
 from typing import Optional, Tuple
 import torch
 
 
 @torch.jit.script
-def select_knn(x: torch.Tensor,
-               k: int,
-               batch_x: Optional[torch.Tensor] = None,
-               inmask: Optional[torch.Tensor] = None,
-               max_radius: float = 1e9,
-               mask_mode: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+def select_knn(
+    x: torch.Tensor,
+    k: int,
+    batch_x: Optional[torch.Tensor] = None,
+    inmask: Optional[torch.Tensor] = None,
+    max_radius: float = 1e9,
+    mask_mode: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""Finds for each element in :obj:`x` the :obj:`k` nearest points in
     :obj:`x`.
 
@@ -44,7 +45,9 @@ def select_knn(x: torch.Tensor,
 
     # Compute row_splits
     if batch_x is None:
-        row_splits: torch.Tensor = torch.tensor([0, x.shape[0]], dtype=torch.int32, device=x.device)
+        row_splits: torch.Tensor = torch.tensor(
+            [0, x.shape[0]], dtype=torch.int32, device=x.device
+        )
     else:
         assert x.size(0) == batch_x.size(0)
         batch_size = int(batch_x.max()) + 1
@@ -57,7 +60,7 @@ def select_knn(x: torch.Tensor,
         # row_splits must start with 0 and end with x.size(0), and has length +1 w.r.t.
         # batch_size.
         # e.g. for 2 events with 5 and 4 hits, row_splits would be [0, 5, 9]
-        row_splits = torch.zeros(batch_size+1, dtype=torch.int32, device=x.device)
+        row_splits = torch.zeros(batch_size + 1, dtype=torch.int32, device=x.device)
         torch.cumsum(counts, 0, out=row_splits[1:])
 
     if x.device == torch.device('cpu'):
@@ -68,7 +71,7 @@ def select_knn(x: torch.Tensor,
             k,
             max_radius,
             mask_mode,
-            )
+        )
     else:
         return torch.ops.select_knn_cuda.select_knn_cuda(
             x,
@@ -77,14 +80,20 @@ def select_knn(x: torch.Tensor,
             k,
             max_radius,
             mask_mode,
-            )
+        )
 
 
 @torch.jit.script
-def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
-              loop: bool = False, flow: str = 'source_to_target',
-              cosine: bool = False, num_workers: int = 1,
-              max_radius: float = 1e9) -> torch.Tensor:
+def knn_graph(
+    x: torch.Tensor,
+    k: int,
+    batch: Optional[torch.Tensor] = None,
+    loop: bool = False,
+    flow: str = 'source_to_target',
+    cosine: bool = False,
+    num_workers: int = 1,
+    max_radius: float = 1e9,
+) -> torch.Tensor:
     r"""Computes graph edges to the nearest :obj:`k` points.
 
     Args:
@@ -119,9 +128,10 @@ def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
         edge_index = knn_graph(x, k=2, batch=batch, loop=False)
     """
     assert flow in ['source_to_target', 'target_to_source']
-    K = k if loop else k + 1    
-    neighbours, edge_dists = select_knn(x, K, batch, max_radius=max_radius) # select_knn is always in "loop" mode
-    
+    # Ask for k+1 neighbors if loop=True, since select_knn will always contain the self-loop
+    K = k if loop else k + 1
+    neighbours, edge_dists = select_knn(x, K, batch, max_radius=max_radius)
+
     # neighbours has the following (n_neigh x k) structure:
     # [[0,  1,  3, ...],  <-- node 0 connected with 0, 1, 3, ...
     #  [1,  0,  -1, ...]   <-- node 1 connected with 1 and 0
@@ -131,7 +141,7 @@ def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
     if loop:
         targets = neighbours.flatten()
     else:
-        targets = neighbours[:,1:].flatten()
+        targets = neighbours[:, 1:].flatten()
 
     # Create sources:
     #   <--k--> <--k-->
@@ -144,6 +154,6 @@ def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
         edge_index = torch.stack((targets, sources))
 
     # Filter out non-edges (target is -1)
-    edge_index = edge_index[:,(targets>=0)]
+    edge_index = edge_index[:, (targets >= 0)]
 
     return edge_index
