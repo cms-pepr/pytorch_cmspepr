@@ -94,7 +94,7 @@ Example Singularity instructions:
 
 ```bash
 singularity pull docker://pytorch/pytorch:2.0.0-cuda11.7-cudnn8-devel
-singularity run --nv sifs/pytorch_2.0.0-cuda11.7-cudnn8-devel.sif
+singularity run --nv pytorch_2.0.0-cuda11.7-cudnn8-devel.sif
 ```
 
 And then once in the container:
