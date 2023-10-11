@@ -78,7 +78,7 @@ print('---------------------')
 tests_require = ['pytest', 'pytest-cov', 'scipy']
 setup(
     name='torch_cmspepr',
-    version='1.0.0',
+    version='1.1.0',
     author='Lindsey Gray <Lindsey.Gray@cern.ch>, Jan Kieseler <jan.kieseler@cern.ch>, Thomas Klijnsma <thomasklijnsma@gmail.com>',
     author_email='Lindsey.Gray@cern.ch',
     url='',

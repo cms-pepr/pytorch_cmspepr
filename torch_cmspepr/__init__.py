@@ -3,7 +3,7 @@ import os.path as osp
 import logging
 import torch
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 
 
 def setup_logger(name: str = "cmspepr") -> logging.Logger:
