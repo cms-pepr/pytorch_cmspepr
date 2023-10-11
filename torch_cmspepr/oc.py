@@ -1,7 +1,7 @@
 import torch
 
 
-# @torch.jit.script
+@torch.jit.script
 def oc(
     beta: torch.FloatTensor,
     q: torch.FloatTensor,
