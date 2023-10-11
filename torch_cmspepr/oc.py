@@ -1,14 +1,15 @@
 import torch
 
+
 # @torch.jit.script
 def oc(
     beta: torch.FloatTensor,
     q: torch.FloatTensor,
     x: torch.FloatTensor,
-    y: torch.LongTensor, # Use long for consistency
-    batch: torch.LongTensor, # Use long for consistency
-    sB: float = 1.
-    ):
+    y: torch.LongTensor,  # Use long for consistency
+    batch: torch.LongTensor,  # Use long for consistency
+    sB: float = 1.0,
+):
     """
     Calculate the object condensation loss function.
 
@@ -40,7 +41,7 @@ def oc(
     assert device == torch.device('cpu')
 
     # Translate batch vector into row splits
-    counts = torch.zeros(batch.max()+1, dtype=torch.int, device=device)
+    counts = torch.zeros(batch.max() + 1, dtype=torch.int, device=device)
     counts.scatter_add_(0, batch, torch.ones_like(batch, dtype=torch.int))
     counts = torch.cat((torch.zeros(1, dtype=torch.int, device=device), counts))
     row_splits = torch.cumsum(counts, 0).type(torch.int)
