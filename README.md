@@ -1,6 +1,8 @@
 # pytorch_cmspepr
 
-pytorch bindings for optimized knn and aggregation kernels
+pytorch bindings for optimized knn and aggregation kernels.
+
+Now also has a C++ extension for the [Object Condensation](https://arxiv.org/abs/2002.03605) loss function.
 
 
 ## Example
@@ -121,7 +123,7 @@ pytest tests
 
 ## Performance
 
-The following profiling code can be used:
+The following profiling code can be used (see the script [performance.py](scripts/performance.py)):
 
 ```python
 import time
@@ -172,3 +174,6 @@ CPU (torch_cluster) took 0.2259768319129944 sec/evt
 CUDA (torch_cmspepr) took 0.026673252582550048 sec/evt
 CUDA (torch_cluster) took 0.22262062072753908 sec/evt
 ```
+
+Similarly, there is a profiling script available for object condensation, see [performance_oc.py](scripts/performance_oc.py).
+Here a 3x speed up is achieved w.r.t. to the pure-Python implementation of object condensation, but more importantly, memory consumption is drastically reduced.
