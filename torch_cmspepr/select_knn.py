@@ -1,15 +1,16 @@
 from typing import Optional, Tuple
-
 import torch
 
 
 @torch.jit.script
-def select_knn(x: torch.Tensor,
-               k: int,
-               batch_x: Optional[torch.Tensor] = None,
-               inmask: Optional[torch.Tensor] = None,
-               max_radius: float = 1e9,
-               mask_mode: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+def select_knn(
+    x: torch.Tensor,
+    k: int,
+    batch_x: Optional[torch.Tensor] = None,
+    inmask: Optional[torch.Tensor] = None,
+    max_radius: float = 1e9,
+    mask_mode: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""Finds for each element in :obj:`x` the :obj:`k` nearest points in
     :obj:`x`.
 
@@ -35,39 +36,64 @@ def select_knn(x: torch.Tensor,
         batch_x = torch.tensor([0, 0, 0, 0])
         assign_index = select_knn(x, 2, batch_x)
     """
-
     x = x.view(-1, 1) if x.dim() == 1 else x
     x = x.contiguous()
 
     mask: torch.Tensor = torch.ones(x.shape[0], dtype=torch.int32, device=x.device)
     if inmask is not None:
         mask = inmask
-    
-    row_splits: torch.Tensor = torch.tensor([0, x.shape[0]], dtype=torch.int32, device=x.device)
-    if batch_x is not None:
-        assert x.size(0) == batch_x.numel()
+
+    # Compute row_splits
+    if batch_x is None:
+        row_splits: torch.Tensor = torch.tensor(
+            [0, x.shape[0]], dtype=torch.int32, device=x.device
+        )
+    else:
+        assert x.size(0) == batch_x.size(0)
         batch_size = int(batch_x.max()) + 1
 
-        deg = x.new_zeros(batch_size, dtype=torch.long)
-        deg.scatter_add_(0, batch_x, torch.ones_like(batch_x))
+        # Get number of hits per event
+        counts = torch.zeros(batch_size, dtype=torch.int32, device=x.device)
+        counts.scatter_add_(0, batch_x, torch.ones_like(batch_x, dtype=torch.int32))
 
-        ptr_x = deg.new_zeros(batch_size + 1)
-        torch.cumsum(deg, 0, out=ptr_x[1:])
+        # Convert counts to row_splits by using cumsum.
+        # row_splits must start with 0 and end with x.size(0), and has length +1 w.r.t.
+        # batch_size.
+        # e.g. for 2 events with 5 and 4 hits, row_splits would be [0, 5, 9]
+        row_splits = torch.zeros(batch_size + 1, dtype=torch.int32, device=x.device)
+        torch.cumsum(counts, 0, out=row_splits[1:])
 
-    return torch.ops.torch_cmspepr.select_knn(
-        x,
-        row_splits,
-        mask,
-        k,
-        max_radius,
-        mask_mode,
-    )
+    if x.device == torch.device('cpu'):
+        return torch.ops.select_knn_cpu.select_knn_cpu(
+            x,
+            row_splits,
+            mask,
+            k,
+            max_radius,
+            mask_mode,
+        )
+    else:
+        return torch.ops.select_knn_cuda.select_knn_cuda(
+            x,
+            row_splits,
+            mask,
+            k,
+            max_radius,
+            mask_mode,
+        )
 
 
 @torch.jit.script
-def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
-              loop: bool = False, flow: str = 'source_to_target',
-              cosine: bool = False, num_workers: int = 1) -> torch.Tensor:
+def knn_graph(
+    x: torch.Tensor,
+    k: int,
+    batch: Optional[torch.Tensor] = None,
+    loop: bool = False,
+    flow: str = 'source_to_target',
+    cosine: bool = False,
+    num_workers: int = 1,
+    max_radius: float = 1e9,
+) -> torch.Tensor:
     r"""Computes graph edges to the nearest :obj:`k` points.
 
     Args:
@@ -101,34 +127,33 @@ def knn_graph(x: torch.Tensor, k: int, batch: Optional[torch.Tensor] = None,
         batch = torch.tensor([0, 0, 0, 0])
         edge_index = knn_graph(x, k=2, batch=batch, loop=False)
     """
-
     assert flow in ['source_to_target', 'target_to_source']
-
+    # Ask for k+1 neighbors if loop=True, since select_knn will always contain the self-loop
     K = k if loop else k + 1
-    start = 0 if loop else 1
-    
-    index_dists = select_knn(x, K, batch) # select_knn is always in "loop" mode
-    neighbours, edge_dists = index_dists[0], index_dists[1]
-    
-    sources = torch.arange(neighbours.shape[0], device=neighbours.device)[:, None].expand(-1, k).contiguous().view(-1)
-    targets = neighbours[:,start:].contiguous().view(-1)
-    
-    edge_index = torch.cat([sources[None, :], targets[None, :]], dim = 0)
-    
-    if flow == 'source_to_target':
-        row, col = edge_index[1], edge_index[0]
+    neighbours, edge_dists = select_knn(x, K, batch, max_radius=max_radius)
+
+    # neighbours has the following (n_neigh x k) structure:
+    # [[0,  1,  3, ...],  <-- node 0 connected with 0, 1, 3, ...
+    #  [1,  0,  -1, ...]   <-- node 1 connected with 1 and 0
+    #  [2, -1, -1, ...]   <-- node 2 connected with 2 and nothing else
+    #  ...]
+    # Flatten it to a 1-dim tensor; Drop first column if not doing the self loop
+    if loop:
+        targets = neighbours.flatten()
     else:
-        row, col = edge_index[0], edge_index[1]
+        targets = neighbours[:, 1:].flatten()
 
-    if not loop:
-        mask = row != col
-        row, col = row[mask], col[mask]
+    # Create sources:
+    #   <--k--> <--k-->
+    # [ 0 0 0 0 1 1 1 1 ... n_nodes n_nodes n_nodes n_nodes]
+    sources = torch.repeat_interleave(torch.arange(x.size(0), device=x.device), k)
 
-    return torch.stack([row, col], dim=0)
+    if flow == 'source_to_target':
+        edge_index = torch.stack((sources, targets))
+    else:
+        edge_index = torch.stack((targets, sources))
 
+    # Filter out non-edges (target is -1)
+    edge_index = edge_index[:, (targets >= 0)]
 
-class SelectKnn(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, ):
-        pass
+    return edge_index

@@ -1,10 +1,11 @@
-#include "select_knn_cpu.h"
-#include "helpers.h"
-#include "utils.h"
-
 #include <torch/extension.h>
-#include <string> //size_t, just for helper function
+
+// #include <string> //size_t, just for helper function
 #include <cmath>
+
+#define CHECK_CPU(x) AT_ASSERTM(x.device().is_cpu(), #x " must be CPU tensor")
+#define I2D(i,j,Nj) j + Nj*i
+
 
 float calculateDistance(
     size_t i_v, 
@@ -168,9 +169,9 @@ select_knn_cpu(torch::Tensor coords,
 	       double max_radius,
 	       int64_t mask_mode) {
 
-    CHECK_CPU(coords);
-    CHECK_CPU(row_splits);
-    CHECK_CPU(mask);
+    // CHECK_CPU(coords);
+    // CHECK_CPU(row_splits);
+    // CHECK_CPU(mask);
 
     const auto n_vert = coords.size(0);
     const auto n_coords = coords.size(1);
@@ -205,4 +206,8 @@ select_knn_cpu(torch::Tensor coords,
         max_radius);
 
     return std::make_tuple(output_idx_tensor, output_dist_tensor);
+}
+
+TORCH_LIBRARY(select_knn_cpu, m) {
+  m.def("select_knn_cpu", select_knn_cpu);
 }
