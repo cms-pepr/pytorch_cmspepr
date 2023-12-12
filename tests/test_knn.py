@@ -1,3 +1,5 @@
+import os.path as osp
+import pytest
 import torch
 
 # 4 points on a diagonal line with d^2 = 0.1^2+0.1^2 = 0.02 between them.
@@ -57,7 +59,14 @@ expected_edge_index_loop = torch.LongTensor(
     ]
 )
 
+SO_DIR = osp.dirname(osp.dirname(osp.abspath(__file__)))
+CPU_INSTALLED = osp.isfile(osp.join(SO_DIR, 'select_knn_cpu.so'))
+CUDA_INSTALLED = osp.isfile(osp.join(SO_DIR, 'select_knn_cuda.so'))
 
+@pytest.mark.skipif(
+    not CPU_INSTALLED,
+    reason='CPU extension for select_knn not installed',
+)
 def test_knn_graph_cpu():
     from torch_cmspepr import knn_graph
 
@@ -86,7 +95,10 @@ def test_knn_graph_cpu():
     print(expected)
     assert torch.allclose(edge_index, expected)
 
-
+@pytest.mark.skipif(
+    not CPU_INSTALLED,
+    reason='CPU extension for select_knn not installed',
+)
 def test_knn_graph_cpu_1dim():
     from torch_cmspepr import knn_graph
 
@@ -104,7 +116,10 @@ def test_knn_graph_cpu_1dim():
     print(expected)
     assert torch.allclose(edge_index, expected)
 
-
+@pytest.mark.skipif(
+    not CUDA_INSTALLED,
+    reason='CUDA extension for select_knn not installed',
+)
 def test_knn_graph_cuda():
     from torch_cmspepr import knn_graph
 
@@ -125,7 +140,10 @@ def test_knn_graph_cuda():
     print(expected_edge_index_loop)
     assert torch.allclose(edge_index, expected_edge_index_loop.to(gpu))
 
-
+@pytest.mark.skipif(
+    not CPU_INSTALLED,
+    reason='CPU extension for select_knn not installed',
+)
 def test_select_knn_cpu():
     from torch_cmspepr import select_knn
 
@@ -141,7 +159,10 @@ def test_select_knn_cpu():
     assert torch.allclose(neigh_indices, expected_neigh_indices)
     assert torch.allclose(neigh_dist_sq, expected_neigh_dist_sq)
 
-
+@pytest.mark.skipif(
+    not CUDA_INSTALLED,
+    reason='CUDA extension for select_knn not installed',
+)
 def test_select_knn_cuda():
     from torch_cmspepr import select_knn
 

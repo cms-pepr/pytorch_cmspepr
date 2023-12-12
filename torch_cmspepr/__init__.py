@@ -3,7 +3,7 @@ import os.path as osp
 import logging
 import torch
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 
 def setup_logger(name: str = "cmspepr") -> logging.Logger:
@@ -37,6 +37,9 @@ def setup_logger(name: str = "cmspepr") -> logging.Logger:
 
 logger = setup_logger()
 
+# Keep track of which ops were successfully loaded
+_loaded_ops = set()
+
 
 # Load the extensions as ops
 def load_ops(so_file):
@@ -44,6 +47,7 @@ def load_ops(so_file):
         logger.error(f'Could not load op: No file {so_file}')
     else:
         torch.ops.load_library(so_file)
+        _loaded_ops.add(osp.basename(so_file))
 
 
 THISDIR = osp.dirname(osp.abspath(__file__))
