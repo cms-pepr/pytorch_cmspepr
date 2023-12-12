@@ -1,5 +1,75 @@
 from typing import Optional, Tuple
 import torch
+from torch_cmspepr import _loaded_ops
+
+# JIT compile the interface to the extensions.
+# Do not try to compile torch.ops.select_knn_* if those ops aren't actually loaded!
+if 'select_knn_cpu.so' in _loaded_ops:
+
+    @torch.jit.script
+    def select_knn_cpu(
+        x: torch.Tensor,
+        row_splits: torch.Tensor,
+        mask: torch.Tensor,
+        k: int,
+        max_radius: float,
+        mask_mode: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return torch.ops.select_knn_cpu.select_knn_cpu(
+            x,
+            row_splits,
+            mask,
+            k,
+            max_radius,
+            mask_mode,
+        )
+
+else:
+
+    @torch.jit.script
+    def select_knn_cpu(
+        x: torch.Tensor,
+        row_splits: torch.Tensor,
+        mask: torch.Tensor,
+        k: int,
+        max_radius: float,
+        mask_mode: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        raise Exception('CPU extension for select_knn not installed')
+
+
+if 'select_knn_cuda.so' in _loaded_ops:
+
+    @torch.jit.script
+    def select_knn_cuda(
+        x: torch.Tensor,
+        row_splits: torch.Tensor,
+        mask: torch.Tensor,
+        k: int,
+        max_radius: float,
+        mask_mode: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return torch.ops.select_knn_cuda.select_knn_cuda(
+            x,
+            row_splits,
+            mask,
+            k,
+            max_radius,
+            mask_mode,
+        )
+
+else:
+
+    @torch.jit.script
+    def select_knn_cuda(
+        x: torch.Tensor,
+        row_splits: torch.Tensor,
+        mask: torch.Tensor,
+        k: int,
+        max_radius: float,
+        mask_mode: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        raise Exception('CUDA extension for select_knn not installed')
 
 
 @torch.jit.script
@@ -64,7 +134,7 @@ def select_knn(
         torch.cumsum(counts, 0, out=row_splits[1:])
 
     if x.device == torch.device('cpu'):
-        return torch.ops.select_knn_cpu.select_knn_cpu(
+        return select_knn_cpu(
             x,
             row_splits,
             mask,
@@ -73,7 +143,7 @@ def select_knn(
             mask_mode,
         )
     else:
-        return torch.ops.select_knn_cuda.select_knn_cuda(
+        return select_knn_cuda(
             x,
             row_splits,
             mask,
